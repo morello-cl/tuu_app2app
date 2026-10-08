@@ -116,11 +116,13 @@ class TuuChargeRequest {
     required String sourceVersion,
     required bool defaultPrintVoucherOnApp,
     required int defaultDteType,
+    String? externalReferenceId,
   }) {
     final TuuExtraData mergedExtra = (extraData ?? const TuuExtraData())
         .mergeDefaults(
       sourceName: sourceName,
       sourceVersion: sourceVersion,
+      externalReferenceId: externalReferenceId,
     );
 
     return <String, Object?>{
@@ -145,12 +147,14 @@ class TuuChargeRequest {
     required String sourceVersion,
     required bool defaultPrintVoucherOnApp,
     required int defaultDteType,
+    String? externalReferenceId,
   }) {
     return jsonEncode(toJson(
       sourceName: sourceName,
       sourceVersion: sourceVersion,
       defaultPrintVoucherOnApp: defaultPrintVoucherOnApp,
       defaultDteType: defaultDteType,
+      externalReferenceId: externalReferenceId,
     ));
   }
 }

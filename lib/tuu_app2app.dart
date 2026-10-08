@@ -59,3 +59,5 @@ export 'src/package_info.dart';
 
 // ── Cliente ──────────────────────────────────────────────────────────────
 export 'src/tuu_client.dart';
+export 'src/models/tuu_transaction_status.dart';
+export 'src/models/tuu_pending_resolution.dart';

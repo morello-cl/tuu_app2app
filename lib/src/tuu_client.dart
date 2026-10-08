@@ -1,11 +1,15 @@
 import 'dart:convert';
 import 'dart:developer' as developer;
+import 'dart:math';
 
 import 'package:flutter/services.dart';
 
 import 'config/tuu_config.dart';
 import 'config/tuu_mode.dart';
 import 'models/tuu_charge_request.dart';
+import 'models/tuu_pending_resolution.dart';
+import 'models/tuu_transaction_status.dart';
+import 'native/tuu_transaction_api.dart';
 import 'models/tuu_charge_response.dart';
 import 'models/tuu_pending_charge.dart';
 import 'models/tuu_exception.dart';
@@ -173,6 +177,81 @@ class TuuClient {
   ///    volver a cobrar.
   ///
   /// En modo mock siempre devuelve `null`: no hay proceso que morir.
+  /// Le pregunta a TUU qué pasó con un cobro, por su referencia.
+  ///
+  /// Es lo que cierra el caso que el Intent no puede: si el POS lanzó el cobro
+  /// y no supo más, esto dice si se cobró. Va contra la API REST de Haulmer,
+  /// no por Intent.
+  ///
+  /// [serial] es el número de serie del equipo y [apiKey] la clave del
+  /// comercio, que viaja en el header `X-API-Key`.
+  ///
+  /// Ojo con [TuuTransactionStatus.esDesconocido]: significa que no se pudo
+  /// averiguar —sin red, timeout, servidor caído— y **no** que no se cobró.
+  /// Volver a cobrar en ese caso puede duplicar.
+  Future<TuuTransactionStatus> consultarTransaccion({
+    required String externalReferenceId,
+    required String serial,
+    required String apiKey,
+  }) async {
+    final api = TuuTransactionApi(
+      baseUrl: config.mode == TuuMode.production
+          ? TuuTransactionApi.baseProduccion
+          : TuuTransactionApi.baseDesarrollo,
+    );
+    return api.consultar(
+      externalReferenceId: externalReferenceId,
+      serial: serial,
+      apiKey: apiKey,
+    );
+  }
+
+  /// Resuelve el cobro pendiente consultándole a TUU, cuando hace falta.
+  ///
+  /// Es el camino completo y el que conviene usar al arrancar: si el pendiente
+  /// ya trae respuesta no consulta nada, y si es incierto pregunta por su
+  /// referencia. Devuelve `null` si no había nada pendiente.
+  ///
+  /// **No borra el pendiente**: eso lo decide quien llama, después de haber
+  /// registrado la venta. Si se borrara acá y el registro fallara, el cobro se
+  /// perdería igual.
+  Future<TuuPendingResolution?> resolverPendiente({
+    required String serial,
+    required String apiKey,
+  }) async {
+    final pendiente = await pendingCharge();
+    if (pendiente == null) return null;
+
+    if (pendiente.tieneRespuesta) {
+      return TuuPendingResolution(pendiente: pendiente);
+    }
+
+    final referencia = pendiente.externalReferenceId;
+    if (referencia == null) {
+      // Cobro lanzado antes de que el plugin mandara la referencia, o con una
+      // app que la quitó: no hay por dónde preguntar.
+      return TuuPendingResolution(pendiente: pendiente);
+    }
+
+    final estado = await consultarTransaccion(
+      externalReferenceId: referencia,
+      serial: serial,
+      apiKey: apiKey,
+    );
+    return TuuPendingResolution(pendiente: pendiente, estado: estado);
+  }
+
+  /// Referencia de 32 hex, el mismo formato que usa ParkingCash (uuid v4 sin
+  /// guiones). Se arma con [Random.secure] para no sumarle una dependencia al
+  /// plugin por esto.
+  String _nuevaReferencia() {
+    final r = Random.secure();
+    return List<String>.generate(
+      16,
+      (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+  }
+
   Future<TuuPendingCharge?> pendingCharge() async {
     if (config.mode == TuuMode.mock) return null;
     final map = await _channel.pendingCharge();
@@ -191,11 +270,17 @@ class TuuClient {
 
   Future<TuuChargeResponse> charge(TuuChargeRequest request) async {
     final String packageName = config.resolvePackageName();
+    // La referencia va siempre, la ponga o no la app: es la única llave con la
+    // que después se le puede preguntar a TUU qué pasó con este cobro. Sin
+    // ella, un cobro cuya respuesta se pierde queda irrecuperable.
+    final String referencia =
+        request.extraData?.externalReferenceId ?? _nuevaReferencia();
     final String jsonBody = request.toJsonString(
       sourceName: config.sourceName,
       sourceVersion: config.sourceVersion,
       defaultPrintVoucherOnApp: config.printVoucherOnApp,
       defaultDteType: config.dteType,
+      externalReferenceId: referencia,
     );
 
     _logRequest(packageName, jsonBody);

@@ -165,10 +165,36 @@ if (pendiente != null) {
 `clearPending()` hay que llamarlo después de registrar; si no, el mismo cobro
 reaparece en cada arranque.
 
-### Lo que TUU no ofrece
+### Cerrar el caso incierto: preguntarle a TUU
 
-No existe ningún Intent ni endpoint para consultar una transacción por
-`sequenceNumber`. La integración app-to-app es síncrona: Intent, respuesta, y
-nada más. Por eso el caso incierto no se puede cerrar por software y queda como
-decisión de quien integra.
+Para el cobro que se lanzó y del que no se supo más, el plugin consulta la API
+REST de Haulmer. **Busca por `externalReferenceId`, no por `sequenceNumber`**,
+y esa referencia la genera `charge()` sola y la manda en el `extraData` del
+Intent: un cobro lanzado sin ella es irrecuperable.
+
+```dart
+final r = await client.resolverPendiente(serial: serieDelEquipo, apiKey: apiKey);
+if (r != null) {
+  if (r.cobrado) {
+    registrarVenta(r.pendiente.response);     // y recién después:
+    await client.clearPending();
+  } else if (r.sePuedeReintentar) {
+    // TUU respondió que no existe o no se completó: cobrar de nuevo es seguro.
+    await client.clearPending();
+  } else if (r.necesitaRevisionManual) {
+    // No se pudo averiguar. NO es lo mismo que no cobrada.
+    mostrarPantallaDeConciliacion(r);
+  }
+}
+```
+
+La `apiKey` es por comercio y va en el header `X-API-Key`.
+
+**La regla que evita el doble cobro:** sólo una respuesta explícita de TUU
+habilita reintentar. Sin red, con TUU caído o con un cobro sin referencia, el
+resultado es `necesitaRevisionManual` — nunca «no cobrada»—, porque tratar la
+falta de información como ausencia de cobro es exactamente lo que duplica.
+
+Lo que **no** existe es consulta por `sequenceNumber`: el Intent es síncrono y
+la API sólo indexa por la referencia que uno mismo mandó.
 

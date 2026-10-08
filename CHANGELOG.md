@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.0
+
+### Agregado
+
+- **Consulta del estado de un cobro contra la API de Haulmer**, que es lo que
+  cierra el caso en que el Intent se lanzó y no se supo más.
+  `consultarTransaccion()` para la consulta cruda y `resolverPendiente()` para
+  el camino completo: lee el pendiente y, si hace falta, pregunta.
+
+  El endpoint es `GET /Transaction/ByExternalReferenceId/{id}/{serial}` con
+  `X-API-Key` por comercio. **Busca por la referencia que genera la app, no por
+  `sequenceNumber`**, así que `charge()` ahora genera un `externalReferenceId`
+  y lo manda en el `extraData` del Intent cuando la app no pone uno. Un cobro
+  lanzado sin esa referencia no se puede consultar.
+
+  `TuuPendingResolution` traduce todo a la única pregunta que importa: si se
+  cobró, si se puede reintentar, o si hay que revisarlo a mano. **Sólo una
+  respuesta explícita de TUU habilita el reintento**: sin red o con el servidor
+  caído el resultado es revisión manual y nunca «no cobrada», porque tratar la
+  falta de información como ausencia de cobro es lo que duplica.
+
+  El endpoint y su uso salieron de ParkingCash, que lo tiene en producción
+  desde su v6.14 para este mismo problema.
+
+- `TuuExtraData.externalReferenceId`.
+
 ## 0.3.0
 
 ### Agregado

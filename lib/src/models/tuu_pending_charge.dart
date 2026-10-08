@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'tuu_charge_response.dart';
 
 /// Un cobro que quedó sin resolver porque el proceso murió mientras TUU
@@ -34,6 +36,30 @@ class TuuPendingCharge {
   /// saberlo: hay que resolverlo por fuera —preguntándole al operador, o
   /// cruzando contra el reporte de TUU— antes de volver a cobrar.
   bool get esIncierto => request != null && response == null;
+
+  /// La referencia con la que se le puede preguntar a TUU por este cobro.
+  ///
+  /// Sale del cuerpo que se envió, donde viaja dentro de `extraData`. Es
+  /// `null` en cobros lanzados por versiones del plugin que todavía no la
+  /// mandaban: esos no se pueden consultar.
+  String? get externalReferenceId {
+    final cuerpo = request;
+    if (cuerpo == null || cuerpo.isEmpty) return null;
+    try {
+      final json = jsonDecode(cuerpo);
+      if (json is! Map) return null;
+      final extra = json['extraData'];
+      if (extra is Map) return extra['externalReferenceId'] as String?;
+      // En el formato legacy `extraData` viaja como String escapado.
+      if (extra is String && extra.isNotEmpty) {
+        final anidado = jsonDecode(extra);
+        if (anidado is Map) return anidado['externalReferenceId'] as String?;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Hace cuánto se lanzó, o `null` si no se sabe.
   Duration? get antiguedad =>

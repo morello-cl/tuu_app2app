@@ -58,6 +58,16 @@ class TuuExtraData {
   /// Campos personalizados para imprimir en el voucher.
   final List<TuuCustomField> customFields;
 
+  /// Identificador que genera la app para poder preguntarle después a TUU qué
+  /// pasó con este cobro.
+  ///
+  /// Es **la única llave de consulta**: el endpoint
+  /// `/Transaction/ByExternalReferenceId/{id}/{serial}` busca por esto y no por
+  /// `sequenceNumber`. Un cobro lanzado sin este campo queda irrecuperable si
+  /// la respuesta se pierde, así que [TuuClient.charge] genera uno cuando la
+  /// app no lo pone.
+  final String? externalReferenceId;
+
   /// Crea un `TuuExtraData` inmutable.
   const TuuExtraData({
     this.taxIdnValidation,
@@ -65,6 +75,7 @@ class TuuExtraData {
     this.netAmount,
     this.sourceName,
     this.sourceVersion,
+    this.externalReferenceId,
     this.customFields = const <TuuCustomField>[],
   });
 
@@ -77,6 +88,7 @@ class TuuExtraData {
   TuuExtraData mergeDefaults({
     required String sourceName,
     required String sourceVersion,
+    String? externalReferenceId,
   }) {
     return TuuExtraData(
       taxIdnValidation: taxIdnValidation,
@@ -84,6 +96,7 @@ class TuuExtraData {
       netAmount: netAmount,
       sourceName: this.sourceName ?? sourceName,
       sourceVersion: this.sourceVersion ?? sourceVersion,
+      externalReferenceId: this.externalReferenceId ?? externalReferenceId,
       customFields: customFields,
     );
   }
@@ -99,6 +112,9 @@ class TuuExtraData {
     if (netAmount != null) result['netAmount'] = netAmount;
     if (sourceName != null) result['sourceName'] = sourceName;
     if (sourceVersion != null) result['sourceVersion'] = sourceVersion;
+    if (externalReferenceId != null) {
+      result['externalReferenceId'] = externalReferenceId;
+    }
     if (customFields.isNotEmpty) {
       result['customFields'] =
           customFields.map((TuuCustomField c) => c.toJson()).toList();
@@ -127,6 +143,7 @@ class TuuExtraData {
       netAmount: (json['netAmount'] as num?)?.toInt(),
       sourceName: json['sourceName'] as String?,
       sourceVersion: json['sourceVersion'] as String?,
+      externalReferenceId: json['externalReferenceId'] as String?,
       customFields: fields,
     );
   }
