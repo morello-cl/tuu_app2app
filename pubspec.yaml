@@ -1,6 +1,8 @@
 name: tuu_app2app
 description: Cliente Flutter para integración app-to-app con TUU (ex-Haulmer) Pagos vía Android Intent.
 version: 0.4.0
+homepage: https://github.com/morello-cl/tuu_app2app
+repository: https://github.com/morello-cl/tuu_app2app
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

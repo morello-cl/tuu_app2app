@@ -1,200 +1,172 @@
 # tuu_app2app
 
-Cliente Flutter para integración **app-to-app** con la app de pagos TUU (ex-Haulmer).
+Plugin Flutter para Android que cobra con la app **TUU** (ex-Haulmer) instalada
+en el mismo equipo. Tu app le pasa el monto por un Intent, el cliente paga con
+tarjeta en la pantalla de TUU y el resultado vuelve como un objeto tipado. No
+hay red de por medio para cobrar.
 
-La comunicación se realiza vía **Android Intent + `startActivityForResult`** contra
-los packages `com.haulmer.paymentapp` (producción) y `com.haulmer.paymentapp.dev`
-(desarrollo). No usa HTTP.
+Y recupera el cobro cuando el terminal mata tu app a mitad del pago, que es la
+razón por la que este plugin existe.
 
-Pensado para apps Flutter de MUFIN (DTEx, ParkingCash) que necesiten cobrar
-con tarjeta a través de la app TUU instalada en el mismo dispositivo Android
-(Kozen, Sunmi y similares).
+Implementa la [integración entre aplicaciones de TUU](https://developers.tuu.cl).
+
+<sub>Paquete mantenido por Mufin. No es un producto oficial de TUU; el nombre y
+el logo pertenecen a TUU.</sub>
+
+## Antes de empezar
+
+- La app `com.haulmer.paymentapp` instalada en el equipo (`.dev` en desarrollo).
+- Nada que agregar al `AndroidManifest.xml` de tu app: el plugin ya declara la
+  visibilidad del package que exige Android 11+.
+- Para consultar cobros perdidos, la **API key del comercio**, que se pide a TUU
+  y viaja en el header `X-API-Key`.
 
 ## Instalación
 
 ```yaml
 dependencies:
   tuu_app2app:
-    path: ../tuu_app2app
+    git:
+      url: https://github.com/morello-cl/tuu_app2app.git
+      ref: v0.4.0
 ```
 
-## Configuración Android
-
-El plugin declara automáticamente en su `AndroidManifest.xml` el bloque
-`<queries>` para que `PackageManager.getLaunchIntentForPackage(...)` funcione
-en Android 11+:
-
-```xml
-<queries>
-    <package android:name="com.haulmer.paymentapp" />
-    <package android:name="com.haulmer.paymentapp.dev" />
-</queries>
-```
-
-Este bloque se mergea al manifest de la app consumidora en build time — no
-requiere cambios manuales.
-
-Se recomienda que la `MainActivity` de la app consumidora use
-`android:launchMode="singleTask"` para que al volver desde TUU vía
-`onActivityResult` la activity recupere su estado intacto.
-
-## Uso
-
-### Detección
+## Cobrar
 
 ```dart
-final tuu = TuuClient(config: const TuuConfig());
-final available = await tuu.isInstalled();         // true si com.haulmer.paymentapp existe
-final availableDev = await tuu.isInstalledDev();   // true si com.haulmer.paymentapp.dev existe
-```
+import 'package:tuu_app2app/tuu_app2app.dart';
 
-### Cobro
-
-```dart
 final tuu = TuuClient(
-  config: const TuuConfig(
-    mode: TuuMode.production,
-    sourceName: 'DTEx',
-    sourceVersion: '1.16.0',
-  ),
+  config: const TuuConfig(sourceName: 'DTEx', sourceVersion: '6.27.0'),
 );
 
-try {
-  final result = await tuu.charge(
-    const TuuChargeRequest(
-      amount: 12000,
-      tip: 0,
-      method: TuuPaymentMethod.any,
-    ),
-  );
+if (!await tuu.isInstalled()) {
+  // Ofrece otro medio de pago.
+}
 
-  if (result.approved) {
-    print('Autorizado: ${result.authCode} — ${result.last4}');
-    // Persistir: sequenceNumber, authCode, transactionMethod, last4
-  } else {
-    print('Rechazado: ${result.errorMessage}');
-  }
+try {
+  final pago = await tuu.charge(const TuuChargeRequest(amount: 20000));
+  // Recién aquí emites la boleta.
+} on TuuRejectedException {
+  // Pide otra tarjeta.
 } on TuuUserCancelledException {
-  // Cancelado por el cajero o cliente
-} on TuuNotInstalledException {
-  // App TUU no está en este device
-} on TuuException catch (e) {
-  // Error genérico — e.code y e.message disponibles
+  // El cajero canceló.
 }
 ```
 
-### Modo mock (desarrollo sin app TUU)
+> [!WARNING]
+> Llama a `resolverPendiente()` **al arrancar la app**, antes de ofrecer un
+> cobro nuevo. Si no, un cobro que se perdió vuelve a cobrarse.
+
+## Cuando el terminal mata tu app
+
+Es lo más común en un POS: Android necesita memoria para la app de pagos y mata
+la tuya, que quedó en segundo plano. El cliente paga, el cobro se aprueba y tu
+app nunca se entera.
+
+El plugin guarda el cobro en disco antes de lanzar el Intent, y la respuesta
+apenas llega, desde el lado nativo. Al volver, pregunta:
+
+```dart
+final r = await tuu.resolverPendiente(serial: serieDelEquipo, apiKey: apiKey);
+
+if (r != null) {
+  if (r.cobrado) {
+    registrarVenta(r.pendiente.response);   // y recién después:
+    await tuu.clearPending();
+  } else if (r.sePuedeReintentar) {
+    await tuu.clearPending();               // cobrar de nuevo es seguro
+  } else if (r.necesitaRevisionManual) {
+    mostrarConciliacion(r);                 // no se pudo averiguar
+  }
+}
+```
+
+`resolverPendiente` no borra nada: lo cierras tú después de registrar la venta.
+Si lo borrara y el registro fallara, el cobro se perdería igual.
+
+### Las tres salidas
+
+| Resultado | Qué pasó | Qué hacer |
+|---|---|---|
+| `cobrado` | La respuesta quedó guardada, o TUU confirmó `completed` | Registrar la venta y `clearPending()` |
+| `sePuedeReintentar` | TUU respondió que no existe o no se completó | Cobrar de nuevo sin riesgo |
+| `necesitaRevisionManual` | No se pudo averiguar | **Preguntar al operador antes de cobrar** |
+
+**Sólo una respuesta explícita de TUU habilita reintentar.** Sin red, con el
+servidor caído o con un cobro sin referencia, el resultado es revisión manual y
+nunca «no cobrada»: tratar la falta de información como ausencia de cobro es
+exactamente lo que duplica un cobro.
+
+### Cómo se consulta
+
+El Intent es síncrono y no reentrega nada, así que la consulta va por la API
+REST de Haulmer, aparte:
+
+```
+GET /Transaction/ByExternalReferenceId/{externalReferenceId}/{serial}
+X-API-Key: <clave del comercio>
+```
+
+**Busca por `externalReferenceId`, no por `sequenceNumber`.** Esa referencia la
+genera `charge()` y la manda en el `extraData` del Intent, así que un cobro
+lanzado por una versión anterior del plugin —o por una app que no la mande— no
+se puede consultar.
+
+Un cobro cuenta como cobrado sólo si `status == 'completed'`. Los demás valores
+no están documentados.
+
+## Probar sin terminal
 
 ```dart
 final tuu = TuuClient(
   config: const TuuConfig(
     mode: TuuMode.mock,
     sourceName: 'DTEx',
-  ),
-  mockBehavior: const TuuMockBehavior(
-    chargeOutcome: TuuMockOutcome.approved,
+    sourceVersion: '1.0.0',
   ),
 );
-
-final result = await tuu.charge(
-  const TuuChargeRequest(amount: 12000),
-);
 ```
 
-## Modos de operación
+| Modo | Qué hace |
+|---|---|
+| `production` | Cobra con la app real contra `integrations.payment.haulmer.com`. |
+| `debug` | Cobra con la app `.dev` y registra lo enviado y lo recibido. |
+| `mock` | No abre nada. Responde según el `TuuMockBehavior` configurado. |
 
-| Modo | Comportamiento |
-|------|----------------|
-| `production` | Solo Intent real, sin logs. |
-| `debug` | Intent real + logs `[TUU:DEBUG]` detallados de request/response. |
-| `mock` | No dispara Intent. Devuelve respuesta simulada según `TuuMockBehavior`. |
+<details>
+<summary>Correspondencia con el JSON del Intent</summary>
 
-## Limitaciones (vs Kushki ONE)
+Lo que viaja en `Intent.EXTRA_TEXT`:
 
-| Característica | Kushki ONE | TUU |
-|----------------|------------|-----|
-| Transporte | HTTP local | Android Intent |
-| Reintentos automáticos | Sí | No |
-| Idempotencia (UUID cliente) | Sí | No (TUU genera `sequenceNumber`) |
-| Reversa programática | Sí | No (sólo cancelación in-app) |
-| Pre-autorización | Sí | No |
-| Búsqueda de transacciones | Sí | No |
-| `abort()` programático | Sí | No |
+| Plugin | Campo | Notas |
+|---|---|---|
+| `amount` | `amount` | pesos enteros |
+| `tip` | `tip` | `-1` desactivado, `0` preguntar, `>0` monto fijo |
+| `cashback` | `cashback` | igual que `tip` |
+| `method` | `method` | `0` preguntar, `1` crédito, `2` débito |
+| `installmentsQuantity` | `installmentsQuantity` | |
+| `printVoucherOnApp` | `printVoucherOnApp` | |
+| `dteType` | `dteType` | `48` boleta por defecto |
+| — | `extraData.externalReferenceId` | lo genera el plugin |
+| `config.sourceName` | `extraData.sourceName` | |
 
-Cualquier reversa o reimpresión debe hacerse desde la app TUU.
+Respuesta: `transactionStatus`, `sequenceNumber`, `transactionMethod`,
+`transactionInstallments`, `last4`, `authCode`, `errorCode`, `errorMessage`,
+`extraData`. El `extraData` se acepta como objeto JSON o como String escapado,
+que es el formato de las versiones antiguas de la app TUU.
 
-## Documentación detallada
+Claves del resultado leídas por compatibilidad: `transactionResult` (actual) y
+`resultJson` (legacy).
 
-- **Guía técnica completa:** [`docs/GUIA_TECNICA.md`](docs/GUIA_TECNICA.md) — arquitectura, modelos tipados, tabla de `errorCode` oficiales, migración desde DTEx legacy, troubleshooting.
-- **Doc oficial TUU:** https://developers.tuu.cl/docs/integraci%C3%B3n-de-aplicaciones-de-pago-inter-app-new
+</details>
 
-## Contacto
+## Desarrollo
 
-- MUFIN SpA — marco@mufin.cl
-- Soporte TUU: https://haulmer.com
-
-## Recuperar un cobro cuando el POS mata la app
-
-En un terminal con poca memoria, Android mata la app que pasa a segundo plano
-para dársela a la app de pagos — justo mientras TUU está cobrando. El resultado
-del Intent **sí** se reentrega cuando la actividad se recrea, pero para entonces
-el estado de Dart ya no existe, así que un cobro aprobado se perdía en silencio.
-
-El plugin lo guarda en disco desde el lado nativo: anota el cobro antes de
-lanzar el Intent y la respuesta apenas llega, antes de pasarla a Dart.
-
-**Hay que preguntarlo al arrancar, antes de ofrecer cobrar de nuevo:**
-
-```dart
-final pendiente = await client.pendingCharge();
-if (pendiente != null) {
-  if (pendiente.tieneRespuesta) {
-    // TUU respondió y nadie recibió la respuesta: el cobro ocurrió.
-    registrarVenta(pendiente.response!);
-    await client.clearPending();
-  } else if (pendiente.esIncierto) {
-    // Se lanzó y no se supo más: PUEDE haberse cobrado.
-    // TUU no expone forma de consultar una transacción, así que esto no se
-    // resuelve desde acá — hay que preguntarle al operador o cruzar contra
-    // el reporte de TUU antes de volver a cobrar.
-    mostrarPantallaDeConciliacion(pendiente);
-  }
-}
+```sh
+flutter test
 ```
 
-`clearPending()` hay que llamarlo después de registrar; si no, el mismo cobro
-reaparece en cada arranque.
-
-### Cerrar el caso incierto: preguntarle a TUU
-
-Para el cobro que se lanzó y del que no se supo más, el plugin consulta la API
-REST de Haulmer. **Busca por `externalReferenceId`, no por `sequenceNumber`**,
-y esa referencia la genera `charge()` sola y la manda en el `extraData` del
-Intent: un cobro lanzado sin ella es irrecuperable.
-
-```dart
-final r = await client.resolverPendiente(serial: serieDelEquipo, apiKey: apiKey);
-if (r != null) {
-  if (r.cobrado) {
-    registrarVenta(r.pendiente.response);     // y recién después:
-    await client.clearPending();
-  } else if (r.sePuedeReintentar) {
-    // TUU respondió que no existe o no se completó: cobrar de nuevo es seguro.
-    await client.clearPending();
-  } else if (r.necesitaRevisionManual) {
-    // No se pudo averiguar. NO es lo mismo que no cobrada.
-    mostrarPantallaDeConciliacion(r);
-  }
-}
-```
-
-La `apiKey` es por comercio y va en el header `X-API-Key`.
-
-**La regla que evita el doble cobro:** sólo una respuesta explícita de TUU
-habilita reintentar. Sin red, con TUU caído o con un cobro sin referencia, el
-resultado es `necesitaRevisionManual` — nunca «no cobrada»—, porque tratar la
-falta de información como ausencia de cobro es exactamente lo que duplica.
-
-Lo que **no** existe es consulta por `sequenceNumber`: el Intent es síncrono y
-la API sólo indexa por la referencia que uno mismo mandó.
-
+Pendiente: capturar respuestas reales de la consulta en desarrollo, para fijar
+los valores de `status` más allá de `completed`, y medir cuánto tarda una
+transacción en aparecer después de cobrada.
